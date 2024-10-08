@@ -59,17 +59,10 @@ const (
 	6) Inject mounting of volumes / files into appropriate directories in application container
 */
 
-func injectApacheHttpdagent(_ logr.Logger, apacheSpec v1alpha1.ApacheHttpd, pod corev1.Pod, useLabelsForResourceAttributes bool, index int, otlpEndpoint string, resourceMap map[string]string) corev1.Pod {
-
-	// caller checks if there is at least one container
-	container := &pod.Spec.Containers[index]
-
+func injectApacheHttpdagent(_ logr.Logger, apacheSpec v1alpha1.ApacheHttpd, pod corev1.Pod, useLabelsForResourceAttributes bool, container Container, otlpEndpoint string, resourceMap map[string]string) corev1.Pod {
 	// inject env vars
 	for _, env := range apacheSpec.Env {
-		idx := getIndexOfEnv(container.Env, env.Name)
-		if idx == -1 {
-			container.Env = append(container.Env, env)
-		}
+		container.appendEnvVarIfNotExists(&pod, env)
 	}
 
 	// First make a clone of the instrumented container to take the existing Apache configuration from
@@ -86,7 +79,7 @@ func injectApacheHttpdagent(_ logr.Logger, apacheSpec v1alpha1.ApacheHttpd, pod 
 
 		apacheConfDir := getApacheConfDir(apacheSpec.ConfigPath)
 
-		cloneContainer := container.DeepCopy()
+		cloneContainer := pod.Spec.Containers[container.index].DeepCopy()
 		cloneContainer.Name = apacheAgentCloneContainerName
 		cloneContainer.Command = []string{"/bin/sh", "-c"}
 		cloneContainer.Args = []string{"cp -r " + apacheConfDir + "/* " + apacheAgentConfDirFull}
@@ -107,24 +100,24 @@ func injectApacheHttpdagent(_ logr.Logger, apacheSpec v1alpha1.ApacheHttpd, pod 
 		// drop volume mount with volume-provided Apache config from original container
 		// since it could over-write configuration provided by the injection
 		idxFound := -1
-		for idx, volume := range container.VolumeMounts {
+		for idx, volume := range pod.Spec.Containers[container.index].VolumeMounts {
 			if strings.Contains(volume.MountPath, apacheConfDir) { // potentially passes config, which we want to pass to init copy only
 				idxFound = idx
 				break
 			}
 		}
 		if idxFound >= 0 {
-			volumeMounts := container.VolumeMounts
+			volumeMounts := pod.Spec.Containers[container.index].VolumeMounts
 			volumeMounts = append(volumeMounts[:idxFound], volumeMounts[idxFound+1:]...)
-			container.VolumeMounts = volumeMounts
+			pod.Spec.Containers[container.index].VolumeMounts = volumeMounts
 		}
 
 		// Inject volumes info instrumented container - Apache config dir + Apache agent
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		pod.Spec.Containers[container.index].VolumeMounts = append(pod.Spec.Containers[container.index].VolumeMounts, corev1.VolumeMount{
 			Name:      apacheAgentVolume,
 			MountPath: apacheAgentDirFull,
 		})
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		pod.Spec.Containers[container.index].VolumeMounts = append(pod.Spec.Containers[container.index].VolumeMounts, corev1.VolumeMount{
 			Name:      apacheAgentConfigVolume,
 			MountPath: apacheConfDir,
 		})
@@ -162,7 +155,7 @@ func injectApacheHttpdagent(_ logr.Logger, apacheSpec v1alpha1.ApacheHttpd, pod 
 			Env: []corev1.EnvVar{
 				{
 					Name:  apacheAttributesEnvVar,
-					Value: getApacheOtelConfig(pod, useLabelsForResourceAttributes, apacheSpec, index, otlpEndpoint, resourceMap),
+					Value: getApacheOtelConfig(pod, useLabelsForResourceAttributes, apacheSpec, container.index, otlpEndpoint, resourceMap),
 				},
 				{Name: apacheServiceInstanceIdEnvVar,
 					ValueFrom: &corev1.EnvVarSource{

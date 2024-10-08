@@ -24,27 +24,21 @@ import (
 
 const (
 	envJavaToolsOptions   = "JAVA_TOOL_OPTIONS"
-	javaAgent             = " -javaagent:/otel-auto-instrumentation-java/javaagent.jar"
+	javaAgent             = "-javaagent:/otel-auto-instrumentation-java/javaagent.jar"
 	javaInitContainerName = initContainerName + "-java"
 	javaVolumeName        = volumeName + "-java"
 	javaInstrMountPath    = "/otel-auto-instrumentation-java"
 )
 
-func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) (corev1.Pod, error) {
-	// caller checks if there is at least one container.
-	container := &pod.Spec.Containers[index]
+func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, container Container) (corev1.Pod, error) {
 
-	err := validateContainerEnv(container.Env, envJavaToolsOptions)
-	if err != nil {
+	if err := container.validate(&pod, envJavaToolsOptions); err != nil {
 		return pod, err
 	}
 
 	// inject Java instrumentation spec env vars.
 	for _, env := range javaSpec.Env {
-		idx := getIndexOfEnv(container.Env, env.Name)
-		if idx == -1 {
-			container.Env = append(container.Env, env)
-		}
+		container.appendEnvVarIfNotExists(&pod, env)
 	}
 
 	javaJVMArgument := javaAgent
@@ -52,17 +46,11 @@ func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) (corev1.
 		javaJVMArgument = javaAgent + fmt.Sprintf(" -Dotel.javaagent.extensions=%s/extensions", javaInstrMountPath)
 	}
 
-	idx := getIndexOfEnv(container.Env, envJavaToolsOptions)
-	if idx == -1 {
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  envJavaToolsOptions,
-			Value: javaJVMArgument,
-		})
-	} else {
-		container.Env[idx].Value = container.Env[idx].Value + javaJVMArgument
+	if err := container.appendOrConcat(&pod, envJavaToolsOptions, javaJVMArgument, ConcatFunc(concatWithSpace)); err != nil {
+		return pod, err
 	}
 
-	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+	pod.Spec.Containers[container.index].VolumeMounts = append(pod.Spec.Containers[container.index].VolumeMounts, corev1.VolumeMount{
 		Name:      javaVolumeName,
 		MountPath: javaInstrMountPath,
 	})
@@ -102,5 +90,5 @@ func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) (corev1.
 		}
 
 	}
-	return pod, err
+	return pod, nil
 }
